@@ -568,7 +568,6 @@ namespace OpenSDK.NEL.Samse
 
                         AnsiConsole.MarkupLine($"[green]代理已成功启动！[/]");
                         AnsiConsole.MarkupLine($"[bold]角色：[/]{character.Name}");
-                        AnsiConsole.MarkupLine($"[bold]连接地址：[/]127.0.0.1:25565");
                         AnsiConsole.MarkupLine("[grey]按任意键关闭代理并返回...[/]");
                         Console.ReadKey(true);
                     }
