@@ -21,6 +21,7 @@ using Serilog;
 using Spectre.Console;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 
 namespace OpenSDK.NEL.Samse
 {
@@ -351,7 +352,6 @@ namespace OpenSDK.NEL.Samse
                 AnsiConsole.Clear();
                 DisplayHeader();
                 AnsiConsole.MarkupLine($"[bold cyan]当前账号：[/][bold]{_authOtp!.EntityId}[/] ({_channel})");
-
                 var keyword = AnsiConsole.Prompt(
                     new TextPrompt<string>("搜索服务器关键字:")
                         .PromptStyle("yellow")
@@ -411,16 +411,16 @@ namespace OpenSDK.NEL.Samse
                 switch (operation[0])
                 {
                     case '1':
-                        if (roles.Length == 0) 
-                        { 
-                            AnsiConsole.Clear(); 
-                            DisplayHeader(); 
-                            AnsiConsole.MarkupLine("[red]无角色，无法启动代理[/]"); 
-                            Utilities.WaitForContinue(); 
-                            continue; 
+                        if (roles.Length == 0)
+                        {
+                            AnsiConsole.Clear();
+                            DisplayHeader();
+                            AnsiConsole.MarkupLine("[red]无角色，无法启动代理[/]");
+                            Utilities.WaitForContinue();
+                            continue;
                         }
 
-                        var roleOptions = roles.Select((r, i) => 
+                        var roleOptions = roles.Select((r, i) =>
                             $"[bold]{i + 1}[/]. {Markup.Escape(r.Name)} (ID: {r.GameId})"
                         ).ToArray();
 
@@ -436,13 +436,13 @@ namespace OpenSDK.NEL.Samse
                         await StartProxyAsync(server, roles[selectedIndex]);
                         return;
 
-                    case '2': 
-                        await CreateRandomCharacterAsync(server); 
+                    case '2':
+                        await CreateRandomCharacterAsync(server);
                         break;
-                    case '3': 
-                        await CreateNamedCharacterAsync(server); 
+                    case '3':
+                        await CreateNamedCharacterAsync(server);
                         break;
-                    case '4': 
+                    case '4':
                         return;
                 }
             }
@@ -533,50 +533,51 @@ namespace OpenSDK.NEL.Samse
                 AnsiConsole.MarkupLine($"[red]创建角色失败：[/] {ex.Message}");
             }
         }
-
         static async Task StartProxyAsync(EntityNetGameItem server, EntityGameCharacter character)
         {
-            await AnsiConsole.Status()
-                .StartAsync("正在启动本地代理...", async ctx =>
+            AnsiConsole.MarkupLine("[bold yellow]正在启动本地代理...[/]");
+            AnsiConsole.MarkupLine($"[bold aqua]Nickname: {character.Name}[/]");
+
+            try
+            {
+                var details = await _authOtp!.Api<EntityQueryNetGameDetailRequest, Entity<EntityQueryNetGameDetailItem>>(
+                    "/item-details/get_v2",
+                    new EntityQueryNetGameDetailRequest { ItemId = server.EntityId });
+
+                var address = await _authOtp.Api<EntityAddressRequest, Entity<EntityNetGameServerAddress>>(
+                    "/item-address/get",
+                    new EntityAddressRequest { ItemId = server.EntityId });
+
+                var version = details.Data!.McVersionList[0];
+                var gameVersion = GameVersionUtil.GetEnumFromGameVersion(version.Name);
+
+                var serverModInfo = await InstallerService.InstallGameMods(
+                    _authOtp.EntityId,
+                    _authOtp.Token,
+                    gameVersion,
+                    new WPFLauncher(),
+                    server.EntityId,
+                    false);
+
+                var mods = JsonSerializer.Serialize(serverModInfo);
+
+                CreateProxyInterceptor(server, character, version, address.Data!, mods);
+
+                await X19.InterconnectionApi.GameStartAsync(_authOtp.EntityId, _authOtp.Token, server.EntityId);
+                while (true)
                 {
-                    try
+                    var key = Console.ReadKey(intercept: true).Key;
+                    if (key == ConsoleKey.Escape)
                     {
-                        var details = await _authOtp!.Api<EntityQueryNetGameDetailRequest, Entity<EntityQueryNetGameDetailItem>>(
-                            "/item-details/get_v2",
-                            new EntityQueryNetGameDetailRequest { ItemId = server.EntityId });
-
-                        var address = await _authOtp.Api<EntityAddressRequest, Entity<EntityNetGameServerAddress>>(
-                            "/item-address/get",
-                            new EntityAddressRequest { ItemId = server.EntityId });
-
-                        var version = details.Data!.McVersionList[0];
-                        var gameVersion = GameVersionUtil.GetEnumFromGameVersion(version.Name);
-
-                        var serverModInfo = await InstallerService.InstallGameMods(
-                            _authOtp.EntityId,
-                            _authOtp.Token,
-                            gameVersion,
-                            new WPFLauncher(),
-                            server.EntityId,
-                            false);
-
-                        var mods = JsonSerializer.Serialize(serverModInfo);
-
-                        CreateProxyInterceptor(server, character, version, address.Data!, mods);
-
-                        await X19.InterconnectionApi.GameStartAsync(_authOtp.EntityId, _authOtp.Token, server.EntityId);
-
-                        AnsiConsole.MarkupLine($"[green]代理已成功启动！[/]");
-                        AnsiConsole.MarkupLine($"[bold]角色：[/]{character.Name}");
-                        AnsiConsole.MarkupLine("[grey]按任意键关闭代理并返回...[/]");
-                        Console.ReadKey(true);
+                        break;
                     }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine($"[red]启动代理失败：[/] {ex.Message}");
-                        Utilities.WaitForContinue();
-                    }
-                });
+                }
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]启动失败：[bold]{ex.Message}[/][/]");
+                Utilities.WaitForContinue();
+            }
         }
 
         static void CreateProxyInterceptor(
@@ -601,7 +602,8 @@ namespace OpenSDK.NEL.Samse
 
             void YggdrasilCallback(string serverId)
             {
-                Log.Information("Server ID: {Certification}", serverId);
+                Log.Information("加入服务器认证 → {ServerId}", serverId.Length > 16 ? serverId.Substring(0, 16) + "..." : serverId);
+
                 var pair = Md5Mapping.GetMd5FromGameVersion(version.Name);
 
                 var signal = new SemaphoreSlim(0);
@@ -620,13 +622,13 @@ namespace OpenSDK.NEL.Samse
                         }, serverId);
 
                         if (success.IsSuccess)
-                            Log.Information("消息认证成功");
+                            Log.Information("Yggdrasil 认证成功");
                         else
-                            Log.Error("消息认证失败: {Error}", success.Error);
+                            Log.Warning("Yggdrasil 认证失败: {Error}", success.Error);
                     }
                     catch (Exception e)
                     {
-                        Log.Error(e, "认证异常");
+                        Log.Error(e, "Yggdrasil 认证异常");
                     }
                     finally
                     {
