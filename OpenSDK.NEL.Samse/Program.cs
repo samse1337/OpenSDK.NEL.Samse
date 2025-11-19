@@ -945,7 +945,6 @@ namespace OpenSDK.NEL.Samse
                     Utilities.WaitForContinue();
                     return;
                 }
-                // 优先使用租凭服接口，避免网络服在租凭ID上返回 404
                 var rentalDetails = await SafeFetchRentalDetailsAsync(rental.EntityId);
                 var rentalAddr1 = await SafeFetchRentalAddressAsync(rental.EntityId, string.Empty);
                 var rentalAddr2 = await FetchGatewayG79AddressAsync(rental.EntityId, string.Empty);
@@ -967,8 +966,7 @@ namespace OpenSDK.NEL.Samse
                     resolvedAddr = new EntityNetGameServerAddress { Ip = rentalAddr1!.Data!.McServerHost, Port = rentalAddr1.Data.McServerPort };
                 else if (rentalAddr2?.Data != null)
                     resolvedAddr = rentalAddr2.Data;
-
-                // 若租凭服接口不可用，再尝试网络服接口
+                
                 if (resolvedAddr == null)
                 {
                     try
@@ -989,7 +987,6 @@ namespace OpenSDK.NEL.Samse
                         }
                         else
                         {
-                            // 尝试 Web 网关的 G79 列表/地址作为最终兜底
                             var gwAddr = await FetchGatewayG79AddressAsync(rental.EntityId, string.Empty);
                             if (gwAddr?.Data != null)
                                 resolvedAddr = gwAddr.Data;
@@ -1779,8 +1776,7 @@ namespace OpenSDK.NEL.Samse
                         return true;
                     }
                 }
-
-                // 扫描可能存在的其它拦截器类型
+                
                 foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 {
                     var t = asm.GetType("OpenSDK.NEL.Interceptor") ?? asm.GetType("Codexus.OpenSDK.NEL.Interceptor");
