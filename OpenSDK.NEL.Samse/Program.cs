@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -34,7 +34,7 @@ using Spectre.Console.Rendering;
 
 namespace OpenSDK.NEL.Samse
 {
-    internal class Program
+    internal partial class Program
     {
         private const string AccountsFile = "accounts.json";
         private static List<SavedAccount> SavedAccounts = new();
@@ -43,6 +43,7 @@ namespace OpenSDK.NEL.Samse
         private static string? _channel;
         private static bool _returnToLogin;
         private static Serilog.ILogger? _originalLogger;
+        
 
         static async Task Main(string[] args)
         {
@@ -58,6 +59,7 @@ namespace OpenSDK.NEL.Samse
 
             AnsiConsole.MarkupLine("[bold aquamarine3]* 此软件基于 Codexus.OpenSDK 以及 Codexus.Development.SDK 制作，旨在为您提供更简洁的脱盒体验。[/]");
             AnsiConsole.WriteLine();
+            TryOpenQqGroupLink();
 
             await InitializeSystemComponentsAsync();
             _services = await CreateServices();
@@ -65,6 +67,24 @@ namespace OpenSDK.NEL.Samse
 
             await LoginOrSelectAccountAsync();
             await MainLoopAsync();
+        }
+
+        static bool _qqOpened;
+        static void TryOpenQqGroupLink()
+        {
+            if (_qqOpened) return;
+            try
+            {
+                var url = "https://qun.qq.com/universal-share/share?ac=1&authKey=ItM%2FrH%2Bb63kGc32QOl%2BfCDGcT7FezLvd%2B%2FAbRn6cOfXY4kVzBBxPFXyjAm0HB6Dr&busi_data=eyJncm91cENvZGUiOiI3MDQ4MTE2ODkiLCJ0b2tlbiI6InhBWmFLK1l1NjRyU3F4cUVXUHBWczlPOVJTTHFhNUdUdmtKZ3JmK3JPU2hIRGQ3V2EvdGZZbkR4V1VtRVZFR24iLCJ1aW4iOiIxNzEwNDI1In0%3D&data=ZiVVmQrSTT6_plT6FRIgLQxFJcPDQjHwSFShCo0dicOjugryhHCBRtV1Nivr1g3lcI2nRRmDr4VJyWOTR88hNg&svctype=4&tempid=h5_group_info";
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = url,
+                    UseShellExecute = true
+                };
+                System.Diagnostics.Process.Start(psi);
+                _qqOpened = true;
+            }
+            catch { }
         }
 
         static void LoadSavedAccounts()
@@ -124,6 +144,7 @@ namespace OpenSDK.NEL.Samse
             {
                 AnsiConsole.Clear();
                 DisplayHeader();
+                PrintLoadedPlugins();
 
                 var choices = new List<string>
                 {
@@ -562,6 +583,7 @@ namespace OpenSDK.NEL.Samse
                     await ManageProxiesAsync();
                     continue;
                 }
+                
             }
         }
 
@@ -571,6 +593,7 @@ namespace OpenSDK.NEL.Samse
             {
                 AnsiConsole.Clear();
                 DisplayHeader();
+                PrintLoadedPlugins();
                 AnsiConsole.MarkupLine($"[bold cyan]当前账号：[bold]{_authOtp!.EntityId}[/] ({_channel})[/]");
 
                 string selected;
@@ -1064,7 +1087,7 @@ namespace OpenSDK.NEL.Samse
 
         static async Task CreateRentalRandomCharacterAsync(EntityRentalGame rental)
         {
-            var name = StringGenerator.GenerateRandomString(12, false);
+            var name = await FetchNeteaseRandomNameAsync();
             await CreateRentalCharacterAsync(rental, name);
             AnsiConsole.MarkupLine($"[green]已创建随机角色：[bold]{name}[/][/]");
             Utilities.WaitForContinue();
@@ -1288,7 +1311,7 @@ namespace OpenSDK.NEL.Samse
 
         static async Task CreateRandomCharacterAsync(EntityNetGameItem server)
         {
-            var name = StringGenerator.GenerateRandomString(12, false);
+            var name = await FetchNeteaseRandomNameAsync();
             await CreateCharacterAsync(server, name);
             AnsiConsole.MarkupLine($"[green]已创建随机角色：[bold]{name}[/][/]");
             Utilities.WaitForContinue();
@@ -1493,10 +1516,45 @@ namespace OpenSDK.NEL.Samse
         {
             Interceptor.EnsureLoaded();
             PacketManager.Instance.EnsureRegistered();
-            PluginManager.Instance.EnsureUninstall();
-            PluginManager.Instance.LoadPlugins("plugins");
+            try
+            {
+                var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
+                Directory.CreateDirectory(dir);
+                Codexus.Development.SDK.Manager.PluginManager.Instance.LoadPlugins("plugins");
+            }
+            catch { }
             await Task.CompletedTask;
         }
+
+        
+
+
+        
+
+        static async Task<string> FetchNeteaseRandomNameAsync()
+        {
+            try
+            {
+                using var hc = new HttpClient();
+                var json = await hc.GetStringAsync("https://wapi.wangyupu.com/api/nng");
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("name", out var n))
+                {
+                    var name = n.GetString() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(name)) return name;
+                }
+            }
+            catch { }
+            return StringGenerator.GenerateRandomString(12, false);
+        }
+
+        
+
+        
+
+        
+
 
         static void RunLogViewer(string serverId)
         {
@@ -1563,6 +1621,34 @@ namespace OpenSDK.NEL.Samse
             l = RegexReplace(l, @"has joined the server\.", m => "[lime]has joined the server.[/]");
 
             AnsiConsole.MarkupLine($"[{color}]{l}[/]");
+        }
+
+        static void PrintLoadedPlugins()
+        {
+            try
+            {
+                var items = Codexus.Development.SDK.Manager.PluginManager.Instance.Plugins.Values.ToArray();
+                if (items.Length == 0)
+                {
+                    AnsiConsole.MarkupLine("[dim]暂无已加载插件[/]");
+                    return;
+                }
+                var table = new Table().Border(TableBorder.Rounded).Title("已加载插件");
+                table.AddColumn("Id");
+                table.AddColumn("Name");
+                table.AddColumn("Version");
+                table.AddColumn("Status");
+                foreach (var p in items)
+                {
+                    var id = $"[aqua]{Markup.Escape(p.Id)}[/]";
+                    var name = $"[bold]{Markup.Escape(p.Name)}[/]";
+                    var ver = Markup.Escape(p.Version ?? "");
+                    var status = Markup.Escape(p.Status.ToString());
+                    table.AddRow(id, name, ver, status);
+                }
+                AnsiConsole.Write(table);
+            }
+            catch { }
         }
 
         static string RegexReplace(string input, string pattern, Func<System.Text.RegularExpressions.Match, string> repl)
@@ -1826,6 +1912,7 @@ namespace OpenSDK.NEL.Samse
         {
             AnsiConsole.Write(new FigletText("OpenSDK.NEL").Centered().Color(Color.Aquamarine3));
             AnsiConsole.MarkupLine("[bold aquamarine3]* 此软件基于 Codexus.OpenSDK 以及 Codexus.Development.SDK 制作，旨在为您提供更简洁的脱盒体验。[/]");
+            AnsiConsole.MarkupLine("[silver]更新发布QQ群：704811689 Github开源地址： [link=https://github.com/samse1337/OpenSDK.NEL.Samse]https://github.com/samse1337/OpenSDK.NEL.Samse[/][/]");
             AnsiConsole.Write(new Rule().RuleStyle("grey").Centered());
             AnsiConsole.WriteLine();
         }

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -23,6 +23,9 @@
         </Reference>
         <Reference Include="Codexus.OpenSDK">
             <HintPath>..\SDK\Codexus.OpenSDK.dll</HintPath>
+        </Reference>
+        <Reference Include="Codexus.OpenSDK">
+            <HintPath>..\SDK\Codexus.Updater</HintPath>
         </Reference>
     </ItemGroup>
 
