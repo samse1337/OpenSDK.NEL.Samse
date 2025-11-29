@@ -8,6 +8,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using Codexus.Cipher.Entities;
 using Codexus.Cipher.Entities.WPFLauncher.NetGame;
 using Codexus.Cipher.Entities.WPFLauncher.RentalGame;
@@ -152,21 +154,9 @@ namespace OpenSDK.NEL.Samse
                     "Cookie 登录",
                     "网易账号登录",
                     "4399 登录",
+                    "使用历史账号登录",
                     "删除历史账号"
                 };
-
-                foreach (var acc in SavedAccounts.Take(10))
-                {
-                    var last = acc.LastUsed.ToLocalTime().ToString("MM-dd HH:mm");
-                    var typeName = acc.Type switch
-                    {
-                        "Cookie" => "Cookie",
-                        "4399" => "4399账号",
-                        "X19" => "x19账号",
-                        _ => acc.Type
-                    };
-                    choices.Add($"[dim]{last}[/] {acc.Name} - [bold]{typeName}[/]");
-                }
 
                 choices.Add("退出程序");
 
@@ -203,21 +193,311 @@ namespace OpenSDK.NEL.Samse
                     await LoginWithX19Async(true);
                     if (_authOtp != null) return;
                 }
+                else if (choice == "使用历史账号登录")
+                {
+                    await LoginWithSavedAccountsAsync();
+                    if (_authOtp != null) return;
+                }
                 else if (choice == "删除历史账号")
                 {
                     DeleteSavedAccounts();
                     continue;
                 }
-                else
+            }
+        }
+
+        static async Task LoginWithSavedAccountsAsync()
+        {
+            while (true)
+            {
+                AnsiConsole.Clear();
+                DisplayHeader();
+                if (SavedAccounts.Count == 0)
                 {
-                    var index = choices.IndexOf(choice) - 5;
-                    if (index >= 0 && index < SavedAccounts.Count)
+                    AnsiConsole.MarkupLine("[yellow]暂无历史账号[/]");
+                    Utilities.WaitForContinue();
+                    return;
+                }
+                var options = SavedAccounts.ToList();
+                options.Add(new SavedAccount { Name = "[返回主菜单]" });
+                SavedAccount selected;
+                try
+                {
+                    selected = AnsiConsole.Prompt(
+                        new SelectionPrompt<SavedAccount>()
+                            .Title("[bold yellow]选择历史账号登录[/]")
+                            .PageSize(15)
+                            .MoreChoicesText("[grey]（上下移动，Enter 选择）[/]")
+                            .AddChoices(options)
+                            .UseConverter(acc => acc.Name == "[返回主菜单]"
+                                ? "[dim grey][[返回主菜单]][/]"
+                                : $"{acc.Name} | {(acc.Type == "X19" ? "[green]x19账号[/]" : acc.Type == "4399" ? "[yellow]4399[/]" : "[dim]Cookie[/]")} | ID:{acc.EntityId} | [dim]{acc.LastUsed.ToLocalTime():MM-dd HH:mm}[/]")
+                    );
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                if (selected.Name == "[返回主菜单]") return;
+                if (await TryLoginWithSavedAccount(selected)) return;
+            }
+        }
+
+        class PluginAvailableItem
+        {
+            public string Id { get; set; } = string.Empty;
+            public string Name { get; set; } = string.Empty;
+            public string Version { get; set; } = string.Empty;
+            public string DownloadUrl { get; set; } = string.Empty;
+            public string ShortDescription { get; set; } = string.Empty;
+            public string Publisher { get; set; } = string.Empty;
+        }
+
+        static async Task<List<PluginAvailableItem>> FetchAvailablePluginsAsync()
+        {
+            try
+            {
+                var url = Environment.GetEnvironmentVariable("NEL_PLUGIN_LIST_URL");
+                if (string.IsNullOrWhiteSpace(url)) url = "https://api.opennel.top/v1/get/pluginlist";
+                using var http = new HttpClient();
+                http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                var text = await http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(text);
+                var arr = GetArray(doc.RootElement);
+                return arr.Select(NormalizeAvailable).Where(x => x != null).ToList()!;
+            }
+            catch { return new List<PluginAvailableItem>(); }
+
+            static JsonElement[] GetArray(JsonElement root)
+            {
+                if (root.ValueKind == JsonValueKind.Array) return root.EnumerateArray().ToArray();
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    var keys = new[] { "items", "data", "plugins", "list" };
+                    foreach (var k in keys)
                     {
-                        if (await TryLoginWithSavedAccount(SavedAccounts[index]))
-                            return;
+                        if (root.TryGetProperty(k, out var el) && el.ValueKind == JsonValueKind.Array)
+                            return el.EnumerateArray().ToArray();
+                    }
+                }
+                return Array.Empty<JsonElement>();
+            }
+
+            static PluginAvailableItem? NormalizeAvailable(JsonElement el)
+            {
+                if (el.ValueKind != JsonValueKind.Object) return null;
+                string? FirstString(JsonElement obj, params string[] keys)
+                {
+                    foreach (var k in keys)
+                    {
+                        if (obj.TryGetProperty(k, out var v))
+                        {
+                            if (v.ValueKind == JsonValueKind.String) return v.GetString();
+                            if (v.ValueKind == JsonValueKind.Number) return v.ToString();
+                            if (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False) return v.ToString();
+                            try { return v.ToString(); } catch { }
+                        }
+                    }
+                    return null;
+                }
+                var id = (FirstString(el, "id", "identifier", "pluginId", "pid") ?? string.Empty).ToUpperInvariant();
+                var name = FirstString(el, "name", "pluginName", "title") ?? string.Empty;
+                var version = FirstString(el, "version", "ver") ?? string.Empty;
+                var downloadUrl = (FirstString(el, "downloadUrl", "url", "link", "href") ?? string.Empty).Replace("`", string.Empty).Trim();
+                var shortDesc = FirstString(el, "shortDescription", "description", "desc") ?? string.Empty;
+                var publisher = FirstString(el, "publisher", "author", "vendor") ?? string.Empty;
+                return new PluginAvailableItem { Id = id, Name = name, Version = version, DownloadUrl = downloadUrl, ShortDescription = shortDesc, Publisher = publisher };
+            }
+        }
+
+        static async Task InstallPluginAsync(PluginAvailableItem item)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.DownloadUrl) || string.IsNullOrWhiteSpace(item.Id)) return;
+            try
+            {
+                if (Codexus.Development.SDK.Manager.PluginManager.Instance.HasPlugin(item.Id))
+                {
+                    AnsiConsole.MarkupLine($"[yellow]{item.Id} 已安装，不能重复安装[/]");
+                    return;
+                }
+            }
+            catch { }
+            try
+            {
+                using var http = new HttpClient();
+                var bytes = await http.GetByteArrayAsync(item.DownloadUrl);
+                var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
+                Directory.CreateDirectory(dir);
+                string fileName;
+                try
+                {
+                    var uri = new Uri(item.DownloadUrl);
+                    var candidate = Path.GetFileName(uri.AbsolutePath);
+                    fileName = string.IsNullOrWhiteSpace(candidate) ? (item.Id + ".ug") : candidate;
+                }
+                catch { fileName = item.Id + ".ug"; }
+                var path = Path.Combine(dir, fileName);
+                File.WriteAllBytes(path, bytes);
+                try { ReloadPlugins(); } catch { }
+            }
+            catch { }
+        }
+
+        static async Task UpdatePluginAsync(PluginAvailableItem item)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.DownloadUrl) || string.IsNullOrWhiteSpace(item.Id)) return;
+            try
+            {
+                if (Codexus.Development.SDK.Manager.PluginManager.Instance.Plugins.TryGetValue(item.Id, out var installed))
+                {
+                    var iv = installed.Version ?? string.Empty;
+                    var av = item.Version ?? string.Empty;
+                    var cmp = ComparePluginVersions(iv, av);
+                    if (cmp >= 0)
+                    {
+                        AnsiConsole.MarkupLine($"[yellow]{item.Id} 已是最新版本（{Markup.Escape(iv)}）[/]");
+                        return;
                     }
                 }
             }
+            catch { }
+            try
+            {
+                using var http = new HttpClient();
+                var bytes = await http.GetByteArrayAsync(item.DownloadUrl);
+                var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
+                Directory.CreateDirectory(dir);
+                string fileName;
+                try
+                {
+                    var uri = new Uri(item.DownloadUrl);
+                    var candidate = Path.GetFileName(uri.AbsolutePath);
+                    fileName = string.IsNullOrWhiteSpace(candidate) ? (item.Id + ".ug") : candidate;
+                }
+                catch { fileName = item.Id + ".ug"; }
+                var path = Path.Combine(dir, fileName);
+                File.WriteAllBytes(path, bytes);
+                try
+                {
+                    if (Codexus.Development.SDK.Manager.PluginManager.Instance.HasPlugin(item.Id))
+                    {
+                        Codexus.Development.SDK.Manager.PluginManager.Instance.UninstallPlugin(item.Id);
+                    }
+                    ReloadPlugins();
+                }
+                catch { }
+            }
+            catch { }
+            await Task.CompletedTask;
+        }
+
+        static int ComparePluginVersions(string a, string b)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(a) && string.IsNullOrWhiteSpace(b)) return 0;
+                if (string.IsNullOrWhiteSpace(a)) return -1;
+                if (string.IsNullOrWhiteSpace(b)) return 1;
+                if (Version.TryParse(a, out var va) && Version.TryParse(b, out var vb))
+                {
+                    return va.CompareTo(vb);
+                }
+                int[] ParseParts(string s)
+                {
+                    var parts = new List<int>();
+                    var sb = new StringBuilder();
+                    foreach (var ch in s)
+                    {
+                        if (char.IsDigit(ch)) sb.Append(ch);
+                        else
+                        {
+                            if (sb.Length > 0) { parts.Add(int.Parse(sb.ToString())); sb.Clear(); }
+                        }
+                    }
+                    if (sb.Length > 0) parts.Add(int.Parse(sb.ToString()));
+                    return parts.ToArray();
+                }
+                var pa = ParseParts(a);
+                var pb = ParseParts(b);
+                for (int i = 0; i < Math.Max(pa.Length, pb.Length); i++)
+                {
+                    var xa = i < pa.Length ? pa[i] : 0;
+                    var xb = i < pb.Length ? pb[i] : 0;
+                    if (xa != xb) return xa.CompareTo(xb);
+                }
+                return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return 0; }
+        }
+
+        static async Task ManagePluginsAsync()
+        {
+            while (true)
+            {
+                AnsiConsole.Clear();
+                DisplayHeader();
+                PrintLoadedPlugins();
+                var available = await FetchAvailablePluginsAsync();
+                var installed = Codexus.Development.SDK.Manager.PluginManager.Instance.Plugins.Values.ToDictionary(p => p.Id, p => p);
+
+                var ops = new[] { "安装插件", "更新已安装插件", "返回主菜单" };
+                var op = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("[bold yellow]请选择操作[/]").AddChoices(ops));
+
+                if (op == "返回主菜单") return;
+
+                if (op == "安装插件")
+                {
+                    var installCandidates = available.Where(a => !installed.ContainsKey(a.Id)).ToList();
+                    if (installCandidates.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine("[yellow]暂无可安装的插件（均已安装）[/]");
+                        Utilities.WaitForContinue();
+                        continue;
+                    }
+                    var selected = AnsiConsole.Prompt(new MultiSelectionPrompt<PluginAvailableItem>()
+                        .Title("[bold yellow]选择要安装的插件（空格选择，Enter确认）[/]")
+                        .PageSize(15)
+                        .AddChoices(installCandidates)
+                        .UseConverter(p => $"{p.Id} | {p.Name} {p.Version}"));
+                    foreach (var s in selected) await InstallPluginAsync(s);
+                    ReloadPlugins();
+                    AnsiConsole.MarkupLine("[green]安装完成[/]");
+                    Utilities.WaitForContinue();
+                    continue;
+                }
+
+                if (op == "更新已安装插件")
+                {
+                    var candidates = available.Where(a => installed.ContainsKey(a.Id) && ComparePluginVersions(installed[a.Id].Version ?? string.Empty, a.Version ?? string.Empty) < 0).ToList();
+                    if (candidates.Count == 0)
+                    {
+                        AnsiConsole.MarkupLine("[yellow]没有可更新的插件[/]");
+                        Utilities.WaitForContinue();
+                        continue;
+                    }
+                    var selected = AnsiConsole.Prompt(new MultiSelectionPrompt<PluginAvailableItem>()
+                        .Title("[bold yellow]选择要更新的插件（空格选择，Enter确认）[/]")
+                        .PageSize(15)
+                        .AddChoices(candidates)
+                        .UseConverter(p => $"{p.Id} | {p.Name} {installed[p.Id].Version} -> {p.Version}"));
+                    foreach (var s in selected) await UpdatePluginAsync(s);
+                    ReloadPlugins();
+                    AnsiConsole.MarkupLine("[green]更新完成[/]");
+                    Utilities.WaitForContinue();
+                    continue;
+                }
+            }
+        }
+
+        static void ReloadPlugins()
+        {
+            try
+            {
+                var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "plugins");
+                Directory.CreateDirectory(dir);
+                Codexus.Development.SDK.Manager.PluginManager.Instance.LoadPlugins("plugins");
+            }
+            catch { }
         }
         
         static async Task LoginWith4399AccountAsync(bool save = false)
@@ -602,7 +882,7 @@ namespace OpenSDK.NEL.Samse
                     selected = AnsiConsole.Prompt(
                         new SelectionPrompt<string>()
                             .Title("[bold yellow]请选择服务器类型[/]")
-                            .AddChoices("网络服", "租凭服", "管理代理", "返回主菜单"));
+                            .AddChoices("网络服", "租凭服", "管理插件", "管理代理", "返回主菜单"));
                 }
                 catch (OperationCanceledException)
                 {
@@ -610,6 +890,7 @@ namespace OpenSDK.NEL.Samse
                 }
 
                 if (selected == "返回主菜单") { _returnToLogin = true; return null; }
+                if (selected == "管理插件") { await ManagePluginsAsync(); continue; }
                 return selected;
             }
         }
@@ -1633,17 +1914,28 @@ namespace OpenSDK.NEL.Samse
                     AnsiConsole.MarkupLine("[dim]暂无已加载插件[/]");
                     return;
                 }
-                var table = new Table().Border(TableBorder.Rounded).Title("已加载插件");
-                table.AddColumn("Id");
-                table.AddColumn("Name");
-                table.AddColumn("Version");
-                table.AddColumn("Status");
+                var table = new Table()
+                    .Border(TableBorder.Heavy)
+                    .BorderColor(Color.CadetBlue)
+                    .Title($"已加载插件 [grey]({items.Length})[/]");
+                table.AddColumn(new TableColumn("[aqua]Id[/]").Centered());
+                table.AddColumn(new TableColumn("[bold]名称[/]").Centered());
+                table.AddColumn(new TableColumn("[silver]版本[/]").Centered());
+                table.AddColumn(new TableColumn("[yellow]状态[/]").Centered());
                 foreach (var p in items)
                 {
                     var id = $"[aqua]{Markup.Escape(p.Id)}[/]";
                     var name = $"[bold]{Markup.Escape(p.Name)}[/]";
                     var ver = Markup.Escape(p.Version ?? "");
-                    var status = Markup.Escape(p.Status.ToString());
+                    var s = p.Status.ToString();
+                    var color = s.Contains("Error", StringComparison.OrdinalIgnoreCase) || s.Contains("Fail", StringComparison.OrdinalIgnoreCase)
+                        ? "red"
+                        : s.Contains("Run", StringComparison.OrdinalIgnoreCase) || s.Contains("Loaded", StringComparison.OrdinalIgnoreCase)
+                            ? "lime"
+                            : s.Contains("Wait", StringComparison.OrdinalIgnoreCase)
+                                ? "yellow"
+                                : "grey";
+                    var status = $"[{color}]{Markup.Escape(s)}[/]";
                     table.AddRow(id, name, ver, status);
                 }
                 AnsiConsole.Write(table);
@@ -1912,7 +2204,7 @@ namespace OpenSDK.NEL.Samse
         {
             AnsiConsole.Write(new FigletText("OpenSDK.NEL").Centered().Color(Color.Aquamarine3));
             AnsiConsole.MarkupLine("[bold aquamarine3]* 此软件基于 Codexus.OpenSDK 以及 Codexus.Development.SDK 制作，旨在为您提供更简洁的脱盒体验。[/]");
-            AnsiConsole.MarkupLine("[silver]更新发布QQ群：704811689 Github开源地址： [link=https://github.com/samse1337/OpenSDK.NEL.Samse]https://github.com/samse1337/OpenSDK.NEL.Samse[/][/]");
+            AnsiConsole.MarkupLine("[silver]更新发布QQ群：704811689 1067404121 Github开源地址： [link=https://github.com/samse1337/OpenSDK.NEL.Samse]https://github.com/samse1337/OpenSDK.NEL.Samse[/][/]");
             AnsiConsole.Write(new Rule().RuleStyle("grey").Centered());
             AnsiConsole.WriteLine();
         }

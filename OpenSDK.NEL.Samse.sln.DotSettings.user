@@ -2,4 +2,5 @@
 	<s:String x:Key="/Default/Environment/AssemblyExplorer/XmlDocument/@EntryValue">&lt;AssemblyExplorer&gt;&#xD;
   &lt;Assembly Path="D:\Source\OpenSDK.NEL.Samse\SDK\Codexus.Game.Launcher.dll" /&gt;&#xD;
   &lt;Assembly Path="C:\Users\samse\RiderProjects\OpenSDK.NEL.Samse\SDK\Codexus.Development.SDK.dll" /&gt;&#xD;
+  &lt;Assembly Path="C:\Users\samse\RiderProjects\OpenSDK.NEL.Samse\SDK\Codexus.OpenSDK.dll" /&gt;&#xD;
 &lt;/AssemblyExplorer&gt;</s:String></wpf:ResourceDictionary>
