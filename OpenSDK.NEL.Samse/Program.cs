@@ -72,11 +72,15 @@ namespace OpenSDK.NEL.Samse
         }
 
         static bool _qqOpened;
+        const string QqOpenedFile = "qq.opened";
         static void TryOpenQqGroupLink()
         {
             if (_qqOpened) return;
             try
             {
+                var baseDir = AppContext.BaseDirectory;
+                var marker = Path.Combine(baseDir, QqOpenedFile);
+                if (File.Exists(marker)) return;
                 var url = "https://qun.qq.com/universal-share/share?ac=1&authKey=ItM%2FrH%2Bb63kGc32QOl%2BfCDGcT7FezLvd%2B%2FAbRn6cOfXY4kVzBBxPFXyjAm0HB6Dr&busi_data=eyJncm91cENvZGUiOiI3MDQ4MTE2ODkiLCJ0b2tlbiI6InhBWmFLK1l1NjRyU3F4cUVXUHBWczlPOVJTTHFhNUdUdmtKZ3JmK3JPU2hIRGQ3V2EvdGZZbkR4V1VtRVZFR24iLCJ1aW4iOiIxNzEwNDI1In0%3D&data=ZiVVmQrSTT6_plT6FRIgLQxFJcPDQjHwSFShCo0dicOjugryhHCBRtV1Nivr1g3lcI2nRRmDr4VJyWOTR88hNg&svctype=4&tempid=h5_group_info";
                 var psi = new System.Diagnostics.ProcessStartInfo
                 {
@@ -85,6 +89,7 @@ namespace OpenSDK.NEL.Samse
                 };
                 System.Diagnostics.Process.Start(psi);
                 _qqOpened = true;
+                try { File.WriteAllText(marker, DateTimeOffset.Now.ToString()); } catch { }
             }
             catch { }
         }
@@ -1370,7 +1375,7 @@ namespace OpenSDK.NEL.Samse
         {
             var name = await FetchNeteaseRandomNameAsync();
             await CreateRentalCharacterAsync(rental, name);
-            AnsiConsole.MarkupLine($"[green]已创建随机角色：[bold]{name}[/][/]");
+            AnsiConsole.MarkupLine($"[green]已创建随机角色：[/] [bold]{Markup.Escape(name)}[/]");
             Utilities.WaitForContinue();
         }
 
@@ -1384,7 +1389,7 @@ namespace OpenSDK.NEL.Samse
                 return;
             }
             await CreateRentalCharacterAsync(rental, name);
-            AnsiConsole.MarkupLine($"[green]已创建角色：[bold]{name}[/]");
+            AnsiConsole.MarkupLine($"[green]已创建角色：[/] [bold]{Markup.Escape(name)}[/]");
             Utilities.WaitForContinue();
         }
 
@@ -1481,7 +1486,8 @@ namespace OpenSDK.NEL.Samse
 
             void YggdrasilCallback(string serverId)
             {
-                var pair = Md5Mapping.GetMd5FromGameVersion(versionName);
+                var normalized = NormalizeVersionForMd5(versionName);
+                var pair = Md5Mapping.GetMd5FromGameVersion(normalized);
                 var signal = new SemaphoreSlim(0);
                 _ = Task.Run(async () =>
                 {
@@ -1490,10 +1496,10 @@ namespace OpenSDK.NEL.Samse
                         var success = await _services!.Yggdrasil.JoinServerAsync(new GameProfile
                         {
                             GameId = rental.EntityId,
-                            GameVersion = versionName,
+                            GameVersion = normalized,
                             BootstrapMd5 = pair.BootstrapMd5,
                             DatFileMd5 = pair.DatFileMd5,
-                            Mods = JsonSerializer.Deserialize<ModList>(mods)!,
+                            Mods = SafeDeserializeMods(mods),
                             User = new UserProfile { UserId = int.Parse(_authOtp.EntityId), UserToken = _authOtp.Token }
                         }, serverId);
 
@@ -1533,9 +1539,14 @@ namespace OpenSDK.NEL.Samse
                     case "启动代理":
                         if (roles.Length == 0)
                         {
-                            AnsiConsole.MarkupLine("[red]暂无角色，无法启动代理[/]");
-                            Utilities.WaitForContinue();
-                            continue;
+                            var refreshed = await GetServerRolesAsync(server);
+                            if (refreshed.Length == 0)
+                            {
+                                AnsiConsole.MarkupLine("[red]暂无角色，无法启动代理[/]");
+                                Utilities.WaitForContinue();
+                                continue;
+                            }
+                            roles = refreshed;
                         }
                         var selectedRole = AnsiConsole.Prompt(
                             new SelectionPrompt<EntityGameCharacter>()
@@ -1593,8 +1604,19 @@ namespace OpenSDK.NEL.Samse
         static async Task CreateRandomCharacterAsync(EntityNetGameItem server)
         {
             var name = await FetchNeteaseRandomNameAsync();
-            await CreateCharacterAsync(server, name);
-            AnsiConsole.MarkupLine($"[green]已创建随机角色：[bold]{name}[/][/]");
+            var ok = await CreateCharacterAsync(server, name);
+            if (ok)
+            {
+                var appeared = await WaitRoleAppearAsync(server, name, 10, 800);
+                if (appeared != null)
+                    AnsiConsole.MarkupLine($"[green]已创建随机角色：[/] [bold]{Markup.Escape(name)}[/]");
+                else
+                    AnsiConsole.MarkupLine($"[yellow]已提交创建请求，但暂未查询到角色：[/] [bold]{Markup.Escape(name)}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[red]创建失败：[/] [bold]{Markup.Escape(name)}[/]");
+            }
             Utilities.WaitForContinue();
         }
 
@@ -1607,12 +1629,23 @@ namespace OpenSDK.NEL.Samse
                 Utilities.WaitForContinue();
                 return;
             }
-            await CreateCharacterAsync(server, name);
-            AnsiConsole.MarkupLine($"[green]已创建角色：[bold]{name}[/]");
+            var ok = await CreateCharacterAsync(server, name);
+            if (ok)
+            {
+                var appeared = await WaitRoleAppearAsync(server, name, 10, 800);
+                if (appeared != null)
+                    AnsiConsole.MarkupLine($"[green]已创建角色：[/] [bold]{Markup.Escape(name)}[/]");
+                else
+                    AnsiConsole.MarkupLine($"[yellow]已提交创建请求，但暂未查询到角色：[/] [bold]{Markup.Escape(name)}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[red]创建失败：[/] [bold]{Markup.Escape(name)}[/]");
+            }
             Utilities.WaitForContinue();
         }
 
-        static async Task CreateCharacterAsync(EntityNetGameItem server, string name)
+        static async Task<bool> CreateCharacterAsync(EntityNetGameItem server, string name)
         {
             try
             {
@@ -1624,14 +1657,32 @@ namespace OpenSDK.NEL.Samse
                         UserId = _authOtp.EntityId,
                         Name = name
                     });
+                return true;
             }
-            catch { }
+            catch { return false; }
+            return false;
+        }
+
+        static async Task<EntityGameCharacter?> WaitRoleAppearAsync(EntityNetGameItem server, string name, int attempts, int delayMs)
+        {
+            for (int i = 0; i < attempts; i++)
+            {
+                try
+                {
+                    var roles = await GetServerRolesAsync(server);
+                    var found = roles.FirstOrDefault(r => string.Equals(r.Name, name, StringComparison.OrdinalIgnoreCase));
+                    if (found != null) return found;
+                }
+                catch { }
+                await Task.Delay(delayMs);
+            }
+            return null;
         }
 
         static async Task StartProxyAsync(EntityNetGameItem server, EntityGameCharacter character)
         {
             AnsiConsole.MarkupLine("[bold yellow]正在启动本地代理...[/]");
-            AnsiConsole.MarkupLine($"[bold aqua]Nickname: {character.Name}[/]");
+            AnsiConsole.MarkupLine($"[bold aqua]Nickname: {Markup.Escape(character.Name)}[/]");
 
             try
             {
@@ -1705,7 +1756,8 @@ namespace OpenSDK.NEL.Samse
 
             void YggdrasilCallback(string serverId)
             {
-                var pair = Md5Mapping.GetMd5FromGameVersion(version.Name);
+                var normalized = NormalizeVersionForMd5(version.Name);
+                var pair = Md5Mapping.GetMd5FromGameVersion(normalized);
                 var signal = new SemaphoreSlim(0);
                 _ = Task.Run(async () =>
                 {
@@ -1714,10 +1766,10 @@ namespace OpenSDK.NEL.Samse
                         var success = await _services!.Yggdrasil.JoinServerAsync(new GameProfile
                         {
                             GameId = server.EntityId,
-                            GameVersion = version.Name,
+                            GameVersion = normalized,
                             BootstrapMd5 = pair.BootstrapMd5,
                             DatFileMd5 = pair.DatFileMd5,
-                            Mods = JsonSerializer.Deserialize<ModList>(mods)!,
+                            Mods = SafeDeserializeMods(mods),
                             User = new UserProfile { UserId = int.Parse(_authOtp.EntityId), UserToken = _authOtp.Token }
                         }, serverId);
 
@@ -1791,6 +1843,27 @@ namespace OpenSDK.NEL.Samse
             }
             catch { }
             return defaultPort;
+        }
+
+        static ModList SafeDeserializeMods(string mods)
+        {
+            try { return JsonSerializer.Deserialize<ModList>(mods)!; } catch { return new ModList(); }
+        }
+
+        static string NormalizeVersionForMd5(string version)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(version)) return version;
+                var parts = version.Split('.', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                {
+                    var majorMinor = parts[0] + "." + parts[1];
+                    return majorMinor;
+                }
+                return version;
+            }
+            catch { return version; }
         }
 
         static async Task InitializeSystemComponentsAsync()
@@ -1889,6 +1962,7 @@ namespace OpenSDK.NEL.Samse
 
         static void PrintColoredLog(string line)
         {
+            if (line.Contains("Unknown DataComponent type:", StringComparison.OrdinalIgnoreCase)) return;
             var escaped = Markup.Escape(line);
             string color = "white";
             if (line.Contains("[Error]", StringComparison.OrdinalIgnoreCase)) color = "red";
@@ -1958,27 +2032,83 @@ namespace OpenSDK.NEL.Samse
             var register = new Channel4399Register();
             var c4399 = new C4399();
             var x19 = new X19();
+            var salt = await ComputeCrcSalt();
+            Log.Information("CRC Salt: {Salt}", string.IsNullOrWhiteSpace(salt) ? "(empty)" : salt);
             var yggdrasil = new StandardYggdrasil(new YggdrasilData
             {
                 LauncherVersion = x19.GameVersion,
                 Channel = "netease",
-                CrcSalt = await ComputeCrcSalt()
+                CrcSalt = salt
             });
             return new Services(api, register, c4399, x19, yggdrasil);
         }
 
         static async Task<string> ComputeCrcSalt()
         {
+            var cachePath = Path.Combine(AppContext.BaseDirectory, "crc-salt.cache");
+            var overridePath = Path.Combine(AppContext.BaseDirectory, "crc-salt.override");
+
             try
             {
-                var http = new HttpWrapper("https://service.codexus.today",
-                    o => o.WithBearerToken("0e9327a2-d0f8-41d5-8e23-233de1824b9a.pk_053ff2d53503434bb42fe158"));
-                var response = await http.GetAsync("/crc-salt");
-                var json = await response.Content.ReadAsStringAsync();
-                var entity = JsonSerializer.Deserialize<OpenSdkResponse<CrcSalt>>(json);
-                return entity?.Data?.Salt ?? string.Empty;
+                var env = Environment.GetEnvironmentVariable("NEL_CRC_SALT");
+                if (!IsInvalidSalt(env))
+                {
+                    Log.Information("Using env CRC Salt: {Salt}", env);
+                    return env!;
+                }
             }
-            catch { return string.Empty; }
+            catch { }
+
+            try
+            {
+                if (File.Exists(overridePath))
+                {
+                    var ov = File.ReadAllText(overridePath).Trim();
+                    if (!IsInvalidSalt(ov))
+                    {
+                        Log.Information("Using override CRC Salt: {Salt}", ov);
+                        return ov;
+                    }
+                }
+            }
+            catch { }
+            for (int attempt = 1; attempt <= 2; attempt++)
+            {
+                try
+                {
+                    var http = new HttpWrapper("https://service.codexus.today",
+                        o => o.WithBearerToken("0e9327a2-d0f8-41d5-8e23-233de1824b9a.pk_053ff2d53503434bb42fe158"));
+                    var response = await http.GetAsync("/crc-salt");
+                    var json = await response.Content.ReadAsStringAsync();
+                    var entity = JsonSerializer.Deserialize<OpenSdkResponse<CrcSalt>>(json);
+                    var salt = entity?.Data?.Salt ?? string.Empty;
+                    Log.Information("CRC Salt fetch attempt {Attempt}: {Salt}", attempt, string.IsNullOrWhiteSpace(salt) ? "(empty)" : salt);
+                    if (!IsInvalidSalt(salt))
+                    {
+                        try { File.WriteAllText(cachePath, salt); } catch { }
+                        Log.Information("CRC Salt ready: {Salt}", salt);
+                        return salt;
+                    }
+                    else
+                    {
+                        Log.Warning("CRC Salt not ready, retrying...");
+                    }
+                }
+                catch { }
+                await Task.Delay(500);
+            }
+            var fallback = "22AC4B0143EFFC80F2905B267D4D84D3";
+            try { File.WriteAllText(cachePath, fallback); } catch { }
+            Log.Information("Using fallback CRC Salt: {Salt}", fallback);
+            return fallback;
+        }
+
+        static bool IsInvalidSalt(string s)
+        {
+            return string.IsNullOrWhiteSpace(s)
+                   || string.Equals(s, "<Initializing>", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(s, "Initializing", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(s, "Pending", StringComparison.OrdinalIgnoreCase);
         }
 
         static MultiTextWriter? _logMux;
